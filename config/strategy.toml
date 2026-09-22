@@ -1,0 +1,68 @@
+# ProFX default configuration. These values MUST equal the MQL5 EA defaults and Pine inputs.
+# Unknown keys are rejected on load. Edit a COPY for experiments; never tune on the final OOS set.
+
+[run]
+symbols = ["EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "USDCAD"]
+initial_balance = 10000.0
+htf_hours = 4
+htf_offset_hours = 0          # broker H4 alignment vs UTC (check your server's H4 open times)
+
+[strategy]
+donchian_n = 24
+atr_period = 14
+ema_fast = 50
+ema_slow = 200
+slope_bars = 6
+breakout_buffer_atr = 0.05
+min_clv = 0.60
+max_bar_range_atr = 2.5
+min_atr_pips = 5.0
+max_atr_pips = 50.0
+session_start_utc = 7
+session_end_utc = 19
+friday_last_entry_utc = 17
+allow_long = true
+allow_short = true
+sl_atr_mult = 1.5
+tp_r = 3.0
+be_r = 1.0
+be_offset_pips = 1.0
+trail_start_r = 1.5
+trail_atr_mult = 2.0
+partial_r = 1.5
+partial_pct = 0.0
+max_bars_in_trade = 72
+exit_on_trend_flip = true
+close_before_weekend = true
+weekend_close_hour_utc = 20
+
+[risk]
+risk_pct = 0.5
+risk_basis = "equity"
+max_open_positions = 3
+max_positions_per_symbol = 1
+max_total_risk_pct = 1.5
+max_daily_trades = 4
+cooldown_bars = 4
+daily_loss_limit_pct = 2.0
+max_drawdown_pct = 8.0
+max_same_ccy_dir = 2
+max_spread_pips = 3.0
+max_spread_frac_of_sl = 0.15
+min_free_margin_pct = 50.0
+leverage = 30.0
+flatten_on_daily_loss = true
+dd_halt_cooldown_days = 0     # live behaviour: latch until human reset. >0 = research-only simulation.
+
+[costs]
+spread_default_pips = 1.0
+spread_mult = 1.0
+slippage_entry_pips = 0.2
+slippage_sl_pips = 0.5
+slippage_mult = 1.0
+exec_delay_seconds = 1.0
+commission_per_lot_rt = 7.0
+commission_mult = 1.0
+swap_long_per_lot_night = -3.0    # ASSUMPTION: replace with your broker's real swaps
+swap_short_per_lot_night = -3.0
+swap_mult = 1.0

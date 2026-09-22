@@ -1,0 +1,171 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+//@version=6
+// ProFX Trend-Breakout - mirrors python/profx (signals.py/engine.py) and MQL5 ProFX.mq5.
+// Signals close-bar only, non-repainting (barstate.isconfirmed gate; no request.security look-ahead).
+strategy("ProFX Trend-Breakout v1", shorttitle = "ProFX", overlay = true, pyramiding = 0,
+     default_qty_type = strategy.percent_of_equity, default_qty_value = 0,  // qty set explicitly per order
+     commission_type = strategy.commission.cash_per_contract, commission_value = 0.00007,  // ~ $7/100k lot round turn, HALF applied per side
+     slippage = 2, calc_on_every_tick = false, process_orders_on_close = true,
+     initial_capital = 10000, currency = currency.USD, max_bars_back = 5000)
+
+// ============================================================ inputs (mirror config/strategy.toml)
+g1 = "Signal"
+donchianN          = input.int(24, "Donchian N", minval = 2, group = g1)
+atrPeriod          = input.int(14, "ATR period", minval = 2, group = g1)
+emaFast            = input.int(50, "HTF EMA fast", minval = 1, group = g1)
+emaSlow            = input.int(200, "HTF EMA slow", minval = 2, group = g1)
+slopeBars          = input.int(6, "HTF slope lookback (bars)", minval = 1, group = g1)
+breakoutBufferAtr  = input.float(0.05, "Breakout buffer (x ATR)", minval = 0.0, step = 0.01, group = g1)
+minClv             = input.float(0.60, "Min close-location-value", minval = 0.5, maxval = 1.0, step = 0.01, group = g1)
+maxBarRangeAtr     = input.float(2.5, "Max bar range (x ATR)", minval = 0.1, group = g1)
+minAtrPips         = input.float(5.0, "Min ATR (pips)", minval = 0.0, group = g1)
+maxAtrPips         = input.float(50.0, "Max ATR (pips)", minval = 0.0, group = g1)
+sessionStr         = input.session("0700-1900", "Session (exchange/UTC per chart tz)", group = g1)
+allowLong          = input.bool(true, "Allow longs", group = g1)
+allowShort         = input.bool(true, "Allow shorts", group = g1)
+htfTF              = input.timeframe("240", "HTF trend timeframe", group = g1)
+
+g2 = "Stops / exits"
+slAtrMult          = input.float(1.5, "SL distance (x ATR)", minval = 0.01, group = g2)
+tpR                = input.float(3.0, "TP (x R), 0 = none", minval = 0.0, group = g2)
+beR                = input.float(1.0, "Break-even trigger (x R), 0=off", minval = 0.0, group = g2)
+beOffsetPips       = input.float(1.0, "Break-even offset (pips)", minval = 0.0, group = g2)
+trailStartR        = input.float(1.5, "Trailing start (x R), 0=off", minval = 0.0, group = g2)
+trailAtrMult       = input.float(2.0, "Trail distance (x ATR)", minval = 0.01, group = g2)
+maxBarsInTrade     = input.int(72, "Max bars in trade", minval = 1, group = g2)
+exitOnTrendFlip    = input.bool(true, "Exit on HTF trend flip", group = g2)
+
+g3 = "Risk"
+riskPct            = input.float(0.5, "Risk % per trade", minval = 0.01, maxval = 2.0, group = g3,
+     tooltip = "Hard-capped at 2% here; keep this in sync with config/strategy.toml")
+maxSpreadPips      = input.float(3.0, "Max spread (pips, needs spread data feed)", minval = 0.0, group = g3)
+commissionPerLotRt = input.float(7.0, "Commission / 100k lot / round turn (info only)", group = g3)
+
+g4 = "Alerts / webhook"
+strategyId         = input.string("PROFX_TREND_V1", "strategy_id (must match webhook allow-list)", group = g4)
+webhookSecretHint  = input.string("", "passphrase field value (set the real secret; never share this script publicly with it filled in)", group = g4)
+
+// ============================================================ pip size / instrument
+// FX convention: 1 pip = 10 * mintick for 3/5-digit quotes (which is effectively all FX symbols
+// TradingView exposes mintick for). syminfo.mintick is always available and reliable, unlike
+// trying to infer digits from the ticker string.
+pip = syminfo.mintick * 10
+pipSafe = pip <= 0 ? syminfo.mintick : pip
+
+// ============================================================ indicators (closed-bar only)
+atrVal = ta.atr(atrPeriod)
+hh = ta.highest(high[1], donchianN)     // shift(1): the bar that just closed is excluded from its own breakout level
+ll = ta.lowest(low[1], donchianN)
+rng = high - low
+clv = rng > 0 ? (close - low) / rng : 0.5
+
+// ---- HTF trend: request.security with lookahead=off + [1] reference => uses the last CLOSED HTF bar only
+htfClose = request.security(syminfo.tickerid, htfTF, close[1], lookahead = barmerge.lookahead_off)
+efNow    = ta.ema(htfClose, emaFast)
+esNow    = ta.ema(htfClose, emaSlow)
+efPrev   = efNow[slopeBars]
+trend    = efNow > esNow and efNow > efPrev ? 1 : (efNow < esNow and efNow < efPrev ? -1 : 0)
+// NOTE: computing the EMA on the *chart* timeframe from a once-per-HTF-bar security() close is an
+// approximation of true HTF-EMA warm-up; for production accuracy verify against the MQL5 iMA(H4) values
+// in a side-by-side dry run before trusting this in live alerts.
+
+atrPips = atrVal / pipSafe
+volOk = atrPips >= minAtrPips and atrPips <= maxAtrPips
+inSession = not na(time(timeframe.period, sessionStr, "UTC"))
+rangeOk = rng <= maxBarRangeAtr * atrVal
+
+longRaw  = allowLong  and close > hh + breakoutBufferAtr * atrVal and clv >= minClv       and trend == 1
+shortRaw = allowShort and close < ll - breakoutBufferAtr * atrVal and clv <= 1 - minClv    and trend == -1
+longSig  = volOk and inSession and rangeOk and longRaw  and barstate.isconfirmed
+shortSig = volOk and inSession and rangeOk and shortRaw and barstate.isconfirmed
+
+// ============================================================ position sizing (risk-based, not fixed qty)
+D = slAtrMult * atrVal
+qtyLong  = D > 0 ? (strategy.equity * riskPct / 100.0) / D : 0.0
+qtyShort = qtyLong
+
+// ============================================================ entries (bar-close signal -> next bar open fill, process_orders_on_close=true)
+if longSig and strategy.position_size <= 0
+    slPx = close - D
+    tpPx = tpR > 0 ? close + tpR * D : na
+    strategy.entry("Long", strategy.long, qty = qtyLong)
+    strategy.exit("L-exit", from_entry = "Long", stop = slPx, limit = tpPx)
+    alert('{"version":1,"strategy_id":"' + strategyId + '","signal_id":"' + syminfo.ticker + "-" + str.tostring(time) +
+         '-buy","symbol":"' + syminfo.ticker + '","timeframe":"' + timeframe.period + '","action":"buy","price":' +
+         str.tostring(close) + ',"sl":' + str.tostring(slPx) + ',"tp":' + (tpR > 0 ? str.tostring(tpPx) : "null") +
+         ',"risk_pct":' + str.tostring(riskPct) + ',"timestamp":' + str.tostring(int(time / 1000)) +
+         ',"passphrase":"' + webhookSecretHint + '"}', alert.freq_once_per_bar_close)
+
+if shortSig and strategy.position_size >= 0
+    slPx = close + D
+    tpPx = tpR > 0 ? close - tpR * D : na
+    strategy.entry("Short", strategy.short, qty = qtyShort)
+    strategy.exit("S-exit", from_entry = "Short", stop = slPx, limit = tpPx)
+    alert('{"version":1,"strategy_id":"' + strategyId + '","signal_id":"' + syminfo.ticker + "-" + str.tostring(time) +
+         '-sell","symbol":"' + syminfo.ticker + '","timeframe":"' + timeframe.period + '","action":"sell","price":' +
+         str.tostring(close) + ',"sl":' + str.tostring(slPx) + ',"tp":' + (tpR > 0 ? str.tostring(tpPx) : "null") +
+         ',"risk_pct":' + str.tostring(riskPct) + ',"timestamp":' + str.tostring(int(time / 1000)) +
+         ',"passphrase":"' + webhookSecretHint + '"}', alert.freq_once_per_bar_close)
+
+// ============================================================ trade management on open positions
+var float entryPx = na
+var float initSl  = na
+var float curSl   = na
+var int   barsHeld = 0
+var bool  beDone = false
+
+if strategy.position_size != 0 and na(entryPx)
+    entryPx := strategy.position_avg_price
+    initSl  := strategy.position_size > 0 ? entryPx - D : entryPx + D
+    curSl   := initSl
+    beDone  := false
+    barsHeld := 0
+
+if strategy.position_size == 0
+    entryPx := na
+    initSl := na
+    curSl := na
+    beDone := false
+    barsHeld := 0
+
+if strategy.position_size != 0
+    barsHeld += 1
+    side = strategy.position_size > 0 ? 1 : -1
+    R = math.abs(entryPx - initSl)
+    fav = side * (close - entryPx)
+
+    // break-even (stop only ever tightens: new candidate compared before assignment)
+    if beR > 0 and not beDone and fav >= beR * R
+        cand = entryPx + side * beOffsetPips * pipSafe
+        if (side > 0 and cand > curSl) or (side < 0 and cand < curSl)
+            curSl := cand
+        beDone := true
+
+    // ATR trailing stop, only tightens
+    if trailStartR > 0 and fav >= trailStartR * R
+        cand = close - side * trailAtrMult * atrVal
+        if (side > 0 and cand > curSl) or (side < 0 and cand < curSl)
+            curSl := cand
+
+    if not na(curSl)
+        strategy.exit("Manage", stop = curSl)
+
+    if exitOnTrendFlip and trend == -side and barstate.isconfirmed
+        strategy.close_all(comment = "trend_flip")
+
+    if barsHeld >= maxBarsInTrade
+        strategy.close_all(comment = "time_exit")
+
+// ============================================================ plots
+plotshape(longSig, title = "Long signal", style = shape.triangleup, location = location.belowbar, color = color.new(color.green, 0), size = size.tiny)
+plotshape(shortSig, title = "Short signal", style = shape.triangledown, location = location.abovebar, color = color.new(color.red, 0), size = size.tiny)
+plot(hh, "Donchian high", color = color.new(color.gray, 40))
+plot(ll, "Donchian low", color = color.new(color.gray, 40))
+
+// ============================================================ KNOWN LIMITATIONS (read before trusting this script)
+// 1. Pine cannot query true broker spread/tick-value/margin; execution realism is inferior to the MT5 EA.
+// 2. request.security(..., close[1], lookahead_off) is the correct non-repainting pattern, but the HTF EMA
+//    computed on it is an approximation - reconcile against the MQL5 iMA(H4) series before trusting live alerts.
+// 3. commission_value above is a rough per-contract approximation of a $7/100k round turn; recalibrate per broker.
+// 4. This script is for signal generation / alerting (TradingView Strategy Tester + webhook), not as the
+//    execution engine; the MQL5 EA or the Python engine are authoritative for live risk enforcement.
