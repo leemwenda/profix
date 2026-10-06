@@ -72,7 +72,7 @@ def load_csv(
     tcol = next((c for c in ("time", "datetime", "date", "timestamp") if c in df.columns), None)
     if tcol is None:
         raise DataError(f"{path}: no time column")
-    if np.issubdtype(df[tcol].dtype, np.number):
+    if pd.api.types.is_numeric_dtype(df[tcol]):
         idx = pd.to_datetime(df[tcol], unit="s")
     else:
         idx = pd.to_datetime(df[tcol])

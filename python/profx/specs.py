@@ -46,6 +46,19 @@ SPECS: dict[str, SymbolSpec] = {
     )
 }
 
+# Broker-verified XAUUSD specification from MetaQuotes-Demo.
+# MT5: digits=2, contract_size=100 oz, volume 0.01..100.00 step 0.01.
+SPECS["XAUUSD"] = SymbolSpec(
+    symbol="XAUUSD",
+    base="XAU",
+    quote="USD",
+    digits=2,
+    contract_size=100.0,
+    vol_min=0.01,
+    vol_max=100.0,
+    vol_step=0.01,
+)
+
 
 def get_spec(symbol: str) -> SymbolSpec:
     try:
