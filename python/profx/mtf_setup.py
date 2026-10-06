@@ -72,7 +72,13 @@ def _m5_confirmation(
     if features is None:
         return False, "M5 unavailable"
 
-    if features.atr is None or features.momentum is None:
+    if (
+        features.atr is None
+        or features.momentum is None
+        or features.ema_fast is None
+        or features.ema_slow is None
+        or features.close is None
+    ):
         return False, "M5 indicators not warmed up"
 
     if direction == "LONG":
@@ -95,7 +101,13 @@ def _m1_trigger(
     if features is None:
         return False, "M1 unavailable"
 
-    if features.atr is None or features.momentum is None:
+    if (
+        features.atr is None
+        or features.momentum is None
+        or features.ema_fast is None
+        or features.close is None
+        or features.close_location is None
+    ):
         return False, "M1 indicators not warmed up"
 
     if direction == "LONG":
