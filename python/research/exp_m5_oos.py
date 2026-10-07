@@ -19,7 +19,8 @@ from profx.engine import MarketData, BacktestEngine
 
 ROOT = Path(".")
 DATA_DIR = ROOT / "python/data/mtf"
-CFG = load_config(ROOT / "config/xauusd.toml")
+CFG0 = load_config(ROOT / "config/xauusd.toml")
+CFG = CFG0.with_risk(max_drawdown_pct=99.0)
 SYMBOL = "XAUUSD"
 
 mtf = load_mtf(DATA_DIR, SYMBOL)
@@ -261,6 +262,7 @@ def run_backtest(
                 short_period,
             )
         },
+        window=(start_time, end_time),
     ).run()
 
     trades = pd.DataFrame(result.trades)
